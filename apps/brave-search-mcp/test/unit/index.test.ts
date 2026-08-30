@@ -123,7 +123,12 @@ describe('index entrypoint', () => {
     }));
     expect(mockState.startServerMock).toHaveBeenCalledTimes(1);
     expect(capturedHttpFlag).toBe(true);
-    expect(capturedOptions).toEqual({ allowedHosts: ['localhost'], corsOrigins: undefined, auth: featureConfig.auth });
+    expect(capturedOptions).toEqual({
+      allowedHosts: ['localhost'],
+      corsOrigins: undefined,
+      auth: featureConfig.auth,
+      enableSessionCorrelation: false,
+    });
     expect(capturedCreateServer).toBeTypeOf('function');
 
     const serverInstance = capturedCreateServer!();

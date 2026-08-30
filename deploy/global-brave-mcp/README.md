@@ -2,7 +2,7 @@
 
 This deploys one shared, stateless HTTP MCP server in an unprivileged Alpine Incus system container. The container has no NIC. Its only outbound path is a loopback proxy that permits `api.search.brave.com:443`; its audit path can only submit records to the host writer.
 
-The API key is copied to `/srv/global-brave-mcp/etc/brave-api-key` with mode `0400`. The app and config live in `/srv/global-brave-mcp/bin` and `/srv/global-brave-mcp/etc`. Search audit records land at `/logs/Brave_MCP/searches/<cwd-with-slashes-replaced>/<session-id>/<UTC-timestamp>.jsonl`.
+The API key is copied to `/srv/global-brave-mcp/etc/brave-api-key` with mode `0400`. The app and config live in `/srv/global-brave-mcp/bin` and `/srv/global-brave-mcp/etc`. Search audit records land at `/logs/Brave_MCP/searches/<cwd-with-slashes-replaced>/<session-id>/<UTC-timestamp>.jsonl`. Audit directories are mode `0755` and JSONL files are mode `0644`, so every local account can read the stored queries, results, project paths, and session IDs. The ingestion socket remains private.
 
 Build and install:
 
@@ -27,7 +27,7 @@ http_headers = { X-Brave-Client = "codex" }
 env_http_headers = { X-Brave-Cwd = "PWD", X-Brave-Session = "CODEX_SESSION_ID" }
 ```
 
-Claude user-scoped `~/.claude.json` entry (using its environment interpolation):
+Claude user-scoped `~/.claude.json` entry:
 
 ```json
 {
@@ -37,13 +37,15 @@ Claude user-scoped `~/.claude.json` entry (using its environment interpolation):
       "url": "http://127.0.0.1:3001/mcp",
       "headers": {
         "X-Brave-Client": "claude",
-        "X-Brave-Cwd": "${PWD}",
-        "X-Brave-Session": "${CLAUDE_SESSION_ID}"
-      }
+        "X-Brave-Cwd": "${PWD}"
+      },
+      "headersHelper": "/usr/local/libexec/global-brave-mcp-claude-session.py"
     }
   }
 }
 ```
+
+The header helper creates a private per-Claude-process startup ID under `/run/user/<uid>/global-brave-mcp`. The existing Claude `SessionStart` hook calls the same helper in `correlate` mode with the hook's real `session_id` and `cwd`. The helper validates the shared Claude ancestor PID and process start time before posting the association to the loopback-only `/session-correlation` endpoint. Resumes and forks update the association without restarting the MCP connection.
 
 These examples are documentation only. The deployment scripts do not modify any Claude or Codex configuration.
 

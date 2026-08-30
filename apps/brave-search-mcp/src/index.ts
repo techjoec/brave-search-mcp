@@ -93,6 +93,7 @@ async function main(): Promise<void> {
       allowedHosts: runtimeConfig.featureConfig.server.allowedHosts,
       corsOrigins: runtimeConfig.featureConfig.server.corsOrigins,
       auth: runtimeConfig.featureConfig.auth,
+      enableSessionCorrelation: runtimeConfig.featureConfig.audit.enabled,
     },
   );
 }

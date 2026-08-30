@@ -42,6 +42,7 @@ const mockState = vi.hoisted(() => {
 
   // Capture the route handler registered via app.all('/mcp', ...)
   let mcpHandler: ((c: any) => Promise<Response>) | undefined;
+  let sessionCorrelationHandler: ((c: any) => Promise<Response>) | undefined;
   let metadataHandler: ((c: any) => Response | Promise<Response>) | undefined;
   const middlewareHandlers: Array<(c: any, next: () => Promise<void>) => Promise<unknown>> = [];
   const honoUseMock = vi.fn((_path: string, handler: (c: any, next: () => Promise<void>) => Promise<unknown>) => {
@@ -57,12 +58,18 @@ const mockState = vi.hoisted(() => {
       mcpHandler = handler;
     }
   });
+  const honoPostMock = vi.fn((path: string, handler: (c: any) => Promise<Response>) => {
+    if (path === '/session-correlation') {
+      sessionCorrelationHandler = handler;
+    }
+  });
   const honoFetchMock = vi.fn();
 
   const mockHonoInstance = {
     use: honoUseMock,
     get: honoGetMock,
     all: honoAllMock,
+    post: honoPostMock,
     fetch: honoFetchMock,
   };
 
@@ -70,6 +77,7 @@ const mockState = vi.hoisted(() => {
     use = honoUseMock;
     get = honoGetMock;
     all = honoAllMock;
+    post = honoPostMock;
     fetch = honoFetchMock;
     constructor() {
       Object.assign(this, mockHonoInstance);
@@ -102,14 +110,17 @@ const mockState = vi.hoisted(() => {
     honoUseMock,
     honoGetMock,
     honoAllMock,
+    honoPostMock,
     honoFetchMock,
     corsMock,
     serveMock,
     mockHttpServer,
     getMcpHandler: () => mcpHandler,
+    getSessionCorrelationHandler: () => sessionCorrelationHandler,
     getMetadataHandler: () => metadataHandler,
     getMiddlewareHandlers: () => [...middlewareHandlers],
     resetMcpHandler: () => { mcpHandler = undefined; },
+    resetSessionCorrelationHandler: () => { sessionCorrelationHandler = undefined; },
     resetMetadataHandler: () => { metadataHandler = undefined; },
     resetMiddlewareHandlers: () => { middlewareHandlers.length = 0; },
   };
@@ -154,6 +165,7 @@ interface MockContext {
   req: {
     raw: Request;
     header: (name: string) => string | undefined;
+    json: () => Promise<unknown>;
     url: string;
   };
   get: (key: string) => unknown;
@@ -172,13 +184,20 @@ function createServerLike(overrides?: Partial<ServerLike>): ServerLike {
 function createMockContext(
   headers: Record<string, string> = {},
   requestUrl: string = 'http://localhost:3001/mcp',
+  body?: unknown,
 ): MockContext {
   const normalizedHeaders = new Headers(headers);
+  const raw = new Request(requestUrl, {
+    method: 'POST',
+    headers: normalizedHeaders,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
   const values = new Map<string, unknown>();
   return {
     req: {
-      raw: new Request(requestUrl, { method: 'POST', headers: normalizedHeaders }),
+      raw,
       header: (name: string) => normalizedHeaders.get(name) ?? undefined,
+      json: async () => body,
       url: requestUrl,
     },
     get: (key: string) => values.get(key),
@@ -231,6 +250,13 @@ async function runMetadataRequest(context: MockContext): Promise<Response> {
   return await handler(context);
 }
 
+async function runSessionCorrelationRequest(context: MockContext): Promise<Response> {
+  const handler = mockState.getSessionCorrelationHandler();
+  if (!handler)
+    throw new TypeError('Expected session correlation route handler');
+  return await handler(context);
+}
+
 function createJsonResponse(body: unknown, status: number = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -273,6 +299,7 @@ describe('server-utils', () => {
     mockState.stdioInstances.length = 0;
     mockState.webStandardInstances.length = 0;
     mockState.resetMcpHandler();
+    mockState.resetSessionCorrelationHandler();
     mockState.resetMetadataHandler();
     mockState.resetMiddlewareHandlers();
 
@@ -464,6 +491,64 @@ describe('server-utils', () => {
       cwd: '/tmp/what',
       sessionId: 'session-123',
     });
+  });
+
+  it('correlates a Claude startup ID with its real session metadata', async () => {
+    let seenRequestContext = getRequestContext();
+    const server = createServerLike();
+    server.connect.mockImplementation(async () => {
+      seenRequestContext = getRequestContext();
+    });
+    vi.spyOn(process, 'on').mockReturnValue(process);
+    await startStreamableHttpServer(() => server as never, { enableSessionCorrelation: true });
+
+    const startupId = '5948588b-902b-4f64-8b8c-39571df874c9';
+    const correlationResponse = await runSessionCorrelationRequest(createMockContext(
+      {
+        'Content-Type': 'application/json',
+        'X-Brave-Startup-ID': startupId,
+      },
+      'http://localhost:3001/session-correlation',
+      {
+        startupId,
+        sessionId: '7ea1180d-32f1-416c-b4f4-42184a9f158e',
+        cwd: '/tmp/what',
+      },
+    ));
+    expect(correlationResponse.status).toBe(204);
+
+    await runMcpRequest(createMockContext({
+      'X-Brave-Client': 'claude',
+      'X-Brave-Cwd': '/wrong',
+      'X-Brave-Session': '$' + '{CLAUDE_CODE_SESSION_ID}',
+      'X-Brave-Startup-ID': startupId,
+    }));
+
+    expect(seenRequestContext?.metadata).toEqual({
+      client: 'claude',
+      cwd: '/tmp/what',
+      sessionId: '7ea1180d-32f1-416c-b4f4-42184a9f158e',
+    });
+  });
+
+  it('rejects a session correlation when the startup IDs do not match', async () => {
+    vi.spyOn(process, 'on').mockReturnValue(process);
+    await startStreamableHttpServer(() => createServerLike() as never, { enableSessionCorrelation: true });
+
+    const response = await runSessionCorrelationRequest(createMockContext(
+      {
+        'Content-Type': 'application/json',
+        'X-Brave-Startup-ID': '5948588b-902b-4f64-8b8c-39571df874c9',
+      },
+      'http://localhost:3001/session-correlation',
+      {
+        startupId: '86629ea3-d6b2-4ce7-98ab-7973ec899a05',
+        sessionId: '7ea1180d-32f1-416c-b4f4-42184a9f158e',
+        cwd: '/tmp/what',
+      },
+    ));
+
+    expect(response.status).toBe(403);
   });
 
   it('startStreamableHttpServer starts when Promise.withResolvers is unavailable', async () => {

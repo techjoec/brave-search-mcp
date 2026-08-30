@@ -10,9 +10,10 @@ SOURCE_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/host" && pwd)
 
 getent passwd global-brave-mcp-log >/dev/null 2>&1 \
   || useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin global-brave-mcp-log
-install -d -m 0700 -o global-brave-mcp-log -g global-brave-mcp-log /logs/Brave_MCP/searches
+install -d -m 0755 -o global-brave-mcp-log -g global-brave-mcp-log /logs/Brave_MCP/searches
 install -d -m 0755 /usr/local/libexec
 install -m 0755 "$SOURCE_DIR/global-brave-mcp-log-writer.py" /usr/local/libexec/global-brave-mcp-log-writer.py
+install -m 0755 "$SOURCE_DIR/global-brave-mcp-claude-session.py" /usr/local/libexec/global-brave-mcp-claude-session.py
 if [ -e /usr/local/libexec/global-brave-mcp-log-writer.mjs ]; then
   unlink /usr/local/libexec/global-brave-mcp-log-writer.mjs
 fi

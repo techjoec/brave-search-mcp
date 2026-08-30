@@ -20,11 +20,18 @@ import {
   createOAuthIdentityResolver,
   OAUTH_PROTECTED_RESOURCE_METADATA_PATH,
 } from './auth/oauth-resource-server.js';
+import {
+  isValidStartupId,
+  parseSessionCorrelationInput,
+  SESSION_CORRELATION_PATH,
+  SessionCorrelationStore,
+} from './auth/session-correlation.js';
 
 export interface StartServerOptions {
   allowedHosts?: string[];
   corsOrigins?: string[];
   auth?: AuthConfig;
+  enableSessionCorrelation?: boolean;
 }
 
 const HTTP_UNAUTHORIZED_HEADERS = {
@@ -108,6 +115,7 @@ export async function startStreamableHttpServer(
   const port = Number.parseInt(process.env.PORT ?? '3001', 10);
   const hostname = process.env.HOST ?? '0.0.0.0';
   const allowedHosts = options?.allowedHosts;
+  const sessionCorrelations = new SessionCorrelationStore();
 
   const app = new Hono<HonoVariables>();
 
@@ -159,6 +167,28 @@ export async function startStreamableHttpServer(
       c.json(buildOAuthProtectedResourceMetadata(c.req.url, oauthConfig)));
   }
 
+  if (options?.enableSessionCorrelation) {
+    app.post(SESSION_CORRELATION_PATH, async (c) => {
+      let input: unknown;
+      try {
+        input = await c.req.json();
+      }
+      catch {
+        return c.json({ error: 'Invalid session correlation payload' }, 400);
+      }
+
+      const correlation = parseSessionCorrelationInput(input);
+      const startupId = c.req.header('x-brave-startup-id');
+      if (!correlation || !isValidStartupId(startupId))
+        return c.json({ error: 'Invalid session correlation payload' }, 400);
+      if (startupId !== correlation.startupId)
+        return c.json({ error: 'Forbidden: startup ID mismatch' }, 403);
+
+      sessionCorrelations.set(correlation);
+      return new Response(null, { status: 204 });
+    });
+  }
+
   app.use('/mcp', async (c, next) => {
     const authorizationHeader = c.req.header('authorization');
     let identity: CallerIdentity | undefined;
@@ -195,7 +225,11 @@ export async function startStreamableHttpServer(
   // MCP endpoint - create a fresh transport and server per request (stateless)
   app.all('/mcp', async (c) => {
     const identity = (c.get(CALLER_IDENTITY_CONTEXT_KEY) as CallerIdentity | undefined) ?? HTTP_ANONYMOUS_IDENTITY;
-    const metadata: RequestMetadata = {
+    const startupId = c.req.header('x-brave-startup-id');
+    const correlatedMetadata = options?.enableSessionCorrelation && isValidStartupId(startupId)
+      ? sessionCorrelations.get(startupId)
+      : undefined;
+    const metadata: RequestMetadata = correlatedMetadata ?? {
       client: c.req.header('x-brave-client'),
       cwd: c.req.header('x-brave-cwd'),
       sessionId: c.req.header('x-brave-session'),

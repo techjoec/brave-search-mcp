@@ -29,7 +29,7 @@ def validate_session_id(value):
 
 
 def main():
-    os.umask(0o077)
+    os.umask(0o022)
     payload = sys.stdin.buffer.read(MAX_EVENT_BYTES + 1)
     if len(payload) > MAX_EVENT_BYTES:
         raise ValueError(f"Rejected audit event larger than {MAX_EVENT_BYTES} bytes")
@@ -41,19 +41,23 @@ def main():
     cwd = validate_cwd(event.get("cwd"))
     session_id = validate_session_id(event.get("sessionId"))
     project_directory = cwd.replace("/", "-")
-    destination_directory = os.path.join(LOG_BASE, project_directory, session_id)
+    project_path = os.path.join(LOG_BASE, project_directory)
+    destination_directory = os.path.join(project_path, session_id)
     timestamp = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
     destination = os.path.join(destination_directory, f"{timestamp}.jsonl")
 
-    os.makedirs(destination_directory, mode=0o700, exist_ok=True)
-    os.chmod(destination_directory, 0o700)
+    os.makedirs(project_path, mode=0o755, exist_ok=True)
+    os.chmod(project_path, 0o755)
+    os.makedirs(destination_directory, mode=0o755, exist_ok=True)
+    os.chmod(destination_directory, 0o755)
     line = (json.dumps(event, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
     descriptor = os.open(
         destination,
         os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
-        0o600,
+        0o644,
     )
     try:
+        os.fchmod(descriptor, 0o644)
         written = os.write(descriptor, line)
         if written != len(line):
             raise OSError(f"short audit write: {written} of {len(line)} bytes")
