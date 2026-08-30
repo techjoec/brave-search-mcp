@@ -1,21 +1,13 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { BraveSearch, ContextThresholdMode } from 'brave-search';
+import type { LlmContextConfig } from '../config-loader.js';
 import type { ToolInterceptor, ToolLogger } from './tool-helpers.js';
 import { z } from 'zod';
+import { DEFAULT_LLM_CONTEXT_CONFIG } from '../config-loader.js';
 import { TOOL_NAMES } from '../tool-catalog.js';
 import { buildToolErrorResult, executeTool, justificationInputSchema } from './tool-helpers.js';
 
-const COMPACT_DEFAULTS = {
-  count: 8,
-  maximumNumberOfUrls: 8,
-  maximumNumberOfTokens: 2048,
-  maximumNumberOfSnippets: 16,
-  maximumNumberOfTokensPerUrl: 512,
-  maximumNumberOfSnippetsPerUrl: 2,
-  maxSnippetChars: 400,
-  maxOutputChars: 8000,
-  contextThresholdMode: 'balanced' as ContextThresholdMode,
-};
+const COMPACT_CONTEXT_THRESHOLD_MODE = 'balanced' as ContextThresholdMode;
 
 const boilerplateSignals = [
   'table of contents',
@@ -31,22 +23,24 @@ const boilerplateSignals = [
   'sources:',
 ];
 
-const llmContextSearchInputSchema = z.object({
-  query: z.string().max(400).describe('The search query. Maximum 400 characters and 50 words.'),
-  url: z.url().optional().describe('Optional URL to target. When provided, the tool retrieves context for that URL and only returns snippets from that exact URL.'),
-  count: z.number().min(1).max(50).default(COMPACT_DEFAULTS.count).optional().describe(`The maximum number of search results considered. Minimum 1, maximum 50. Default ${COMPACT_DEFAULTS.count} in compact mode, up to 50 in full mode.`),
-  maximumNumberOfUrls: z.number().min(1).max(50).default(COMPACT_DEFAULTS.maximumNumberOfUrls).optional().describe(`The maximum number of URLs to include in the response. Minimum 1, maximum 50. Default ${COMPACT_DEFAULTS.maximumNumberOfUrls} in compact mode, up to 50 in full mode.`),
-  maximumNumberOfTokens: z.number().min(1024).max(32768).default(COMPACT_DEFAULTS.maximumNumberOfTokens).optional().describe(`The approximate maximum number of tokens in the returned context. Minimum 1024, maximum 32768. Default ${COMPACT_DEFAULTS.maximumNumberOfTokens} in compact mode, up to 32768 in full mode.`),
-  maximumNumberOfSnippets: z.number().min(1).max(100).default(COMPACT_DEFAULTS.maximumNumberOfSnippets).optional().describe(`The maximum number of snippets across all URLs. Minimum 1, maximum 100. Default ${COMPACT_DEFAULTS.maximumNumberOfSnippets} in compact mode, up to 100 in full mode.`),
-  maximumNumberOfTokensPerUrl: z.number().min(512).max(8192).default(COMPACT_DEFAULTS.maximumNumberOfTokensPerUrl).optional().describe(`The maximum number of tokens per URL. Minimum 512, maximum 8192. Default ${COMPACT_DEFAULTS.maximumNumberOfTokensPerUrl} in compact mode, up to 8192 in full mode.`),
-  maximumNumberOfSnippetsPerUrl: z.number().min(1).max(100).default(COMPACT_DEFAULTS.maximumNumberOfSnippetsPerUrl).optional().describe(`The maximum number of snippets per URL. Minimum 1, maximum 100. Default ${COMPACT_DEFAULTS.maximumNumberOfSnippetsPerUrl} in compact mode, up to 100 in full mode.`),
-  responseMode: z.enum(['compact', 'full']).default('compact').optional().describe('compact applies Brave\'s balanced relevance filtering plus local snippet filtering/truncation. full disables Brave\'s relevance filtering and returns raw snippets without local filtering or truncation.'),
-  maxSnippetChars: z.number().int().min(80).max(4000).default(COMPACT_DEFAULTS.maxSnippetChars).optional().describe(`Maximum characters per snippet in compact mode. Default ${COMPACT_DEFAULTS.maxSnippetChars}.`),
-  maxOutputChars: z.number().int().min(1000).max(100000).default(COMPACT_DEFAULTS.maxOutputChars).optional().describe(`Approximate maximum serialized response size in compact mode. Default ${COMPACT_DEFAULTS.maxOutputChars}.`),
-  justification: justificationInputSchema,
-});
+function createLlmContextSearchInputSchema(defaults: LlmContextConfig) {
+  return z.object({
+    query: z.string().max(400).describe('The search query. Maximum 400 characters and 50 words.'),
+    url: z.url().optional().describe('Optional URL to target. When provided, the tool retrieves context for that URL and only returns snippets from that exact URL.'),
+    count: z.number().min(1).max(50).default(defaults.count).optional().describe(`The maximum number of search results considered. Default ${defaults.count}.`),
+    maximumNumberOfUrls: z.number().min(1).max(50).default(defaults.maximumNumberOfUrls).optional().describe(`The maximum number of URLs to include. Default ${defaults.maximumNumberOfUrls}.`),
+    maximumNumberOfTokens: z.number().min(1024).max(32768).default(defaults.maximumNumberOfTokens).optional().describe(`Approximate total token limit. Default ${defaults.maximumNumberOfTokens}.`),
+    maximumNumberOfSnippets: z.number().min(1).max(100).default(defaults.maximumNumberOfSnippets).optional().describe(`Maximum snippets across all URLs. Default ${defaults.maximumNumberOfSnippets}.`),
+    maximumNumberOfTokensPerUrl: z.number().min(512).max(8192).default(defaults.maximumNumberOfTokensPerUrl).optional().describe(`Maximum tokens per URL. Default ${defaults.maximumNumberOfTokensPerUrl}.`),
+    maximumNumberOfSnippetsPerUrl: z.number().min(1).max(100).default(defaults.maximumNumberOfSnippetsPerUrl).optional().describe(`Maximum snippets per URL. Default ${defaults.maximumNumberOfSnippetsPerUrl}.`),
+    responseMode: z.enum(['compact', 'full']).default(defaults.responseMode).optional().describe('compact applies Brave\'s balanced relevance filtering plus local snippet filtering/truncation. full disables Brave\'s relevance filtering and returns raw snippets without local filtering or truncation.'),
+    maxSnippetChars: z.number().int().min(80).max(4000).default(defaults.maxSnippetChars).optional().describe(`Maximum characters per snippet in compact mode. Default ${defaults.maxSnippetChars}.`),
+    maxOutputChars: z.number().int().min(1000).max(100000).default(defaults.maxOutputChars).optional().describe(`Approximate maximum serialized response size in compact mode. Default ${defaults.maxOutputChars}.`),
+    justification: justificationInputSchema,
+  });
+}
 
-export type BraveLLMContextSearchInput = z.infer<typeof llmContextSearchInputSchema>;
+export type BraveLLMContextSearchInput = z.infer<ReturnType<typeof createLlmContextSearchInputSchema>>;
 
 export class BraveLLMContextSearchTool {
   public readonly name = TOOL_NAMES.llmContext;
@@ -56,16 +50,19 @@ export class BraveLLMContextSearchTool {
     + 'Also useful for extracting text from a specific URL. '
     + `Not needed for simple factual lookups — use ${TOOL_NAMES.web} for those.`;
 
-  public readonly inputSchema = llmContextSearchInputSchema;
+  public readonly inputSchema;
 
   constructor(
     private logMessage: ToolLogger,
     private braveSearch: BraveSearch,
     private isUI: boolean = false,
     private interceptors: readonly ToolInterceptor[] = [],
-  ) {}
+    private defaults: LlmContextConfig = { ...DEFAULT_LLM_CONTEXT_CONFIG },
+  ) {
+    this.inputSchema = createLlmContextSearchInputSchema(defaults);
+  }
 
-  public async execute(input: z.infer<typeof llmContextSearchInputSchema>): Promise<CallToolResult> {
+  public async execute(input: BraveLLMContextSearchInput): Promise<CallToolResult> {
     return executeTool({
       toolName: this.name,
       input,
@@ -89,7 +86,7 @@ export class BraveLLMContextSearchTool {
     };
   }
 
-  public async executeCore(input: z.infer<typeof llmContextSearchInputSchema>): Promise<CallToolResult> {
+  public async executeCore(input: BraveLLMContextSearchInput): Promise<CallToolResult> {
     const {
       query,
       url,
@@ -104,23 +101,23 @@ export class BraveLLMContextSearchTool {
       maxOutputChars,
     } = input;
 
-    const isCompact = responseMode !== 'full';
-    const effectiveCount = isCompact ? Math.min(count ?? COMPACT_DEFAULTS.count, COMPACT_DEFAULTS.count) : count;
+    const isCompact = (responseMode ?? this.defaults.responseMode) !== 'full';
+    const effectiveCount = isCompact ? Math.min(count ?? this.defaults.count, this.defaults.count) : count ?? this.defaults.count;
     const effectiveMaximumNumberOfUrls = isCompact
-      ? Math.min(maximumNumberOfUrls ?? COMPACT_DEFAULTS.maximumNumberOfUrls, COMPACT_DEFAULTS.maximumNumberOfUrls)
-      : maximumNumberOfUrls;
+      ? Math.min(maximumNumberOfUrls ?? this.defaults.maximumNumberOfUrls, this.defaults.maximumNumberOfUrls)
+      : maximumNumberOfUrls ?? this.defaults.maximumNumberOfUrls;
     const effectiveMaximumNumberOfTokens = isCompact
-      ? Math.min(maximumNumberOfTokens ?? COMPACT_DEFAULTS.maximumNumberOfTokens, COMPACT_DEFAULTS.maximumNumberOfTokens)
-      : maximumNumberOfTokens;
+      ? Math.min(maximumNumberOfTokens ?? this.defaults.maximumNumberOfTokens, this.defaults.maximumNumberOfTokens)
+      : maximumNumberOfTokens ?? this.defaults.maximumNumberOfTokens;
     const effectiveMaximumNumberOfSnippets = isCompact
-      ? Math.min(maximumNumberOfSnippets ?? COMPACT_DEFAULTS.maximumNumberOfSnippets, COMPACT_DEFAULTS.maximumNumberOfSnippets)
-      : maximumNumberOfSnippets;
+      ? Math.min(maximumNumberOfSnippets ?? this.defaults.maximumNumberOfSnippets, this.defaults.maximumNumberOfSnippets)
+      : maximumNumberOfSnippets ?? this.defaults.maximumNumberOfSnippets;
     const effectiveMaximumNumberOfTokensPerUrl = isCompact
-      ? Math.min(maximumNumberOfTokensPerUrl ?? COMPACT_DEFAULTS.maximumNumberOfTokensPerUrl, COMPACT_DEFAULTS.maximumNumberOfTokensPerUrl)
-      : maximumNumberOfTokensPerUrl;
+      ? Math.min(maximumNumberOfTokensPerUrl ?? this.defaults.maximumNumberOfTokensPerUrl, this.defaults.maximumNumberOfTokensPerUrl)
+      : maximumNumberOfTokensPerUrl ?? this.defaults.maximumNumberOfTokensPerUrl;
     const effectiveMaximumNumberOfSnippetsPerUrl = isCompact
-      ? Math.min(maximumNumberOfSnippetsPerUrl ?? COMPACT_DEFAULTS.maximumNumberOfSnippetsPerUrl, COMPACT_DEFAULTS.maximumNumberOfSnippetsPerUrl)
-      : maximumNumberOfSnippetsPerUrl;
+      ? Math.min(maximumNumberOfSnippetsPerUrl ?? this.defaults.maximumNumberOfSnippetsPerUrl, this.defaults.maximumNumberOfSnippetsPerUrl)
+      : maximumNumberOfSnippetsPerUrl ?? this.defaults.maximumNumberOfSnippetsPerUrl;
     const retrievalQuery = url ?? query;
 
     const results = await this.braveSearch.llmContextSearch(retrievalQuery, {
@@ -130,7 +127,7 @@ export class BraveLLMContextSearchTool {
       maximum_number_of_snippets: effectiveMaximumNumberOfSnippets,
       maximum_number_of_tokens_per_url: effectiveMaximumNumberOfTokensPerUrl,
       maximum_number_of_snippets_per_url: effectiveMaximumNumberOfSnippetsPerUrl,
-      context_threshold_mode: isCompact ? COMPACT_DEFAULTS.contextThresholdMode : 'disabled',
+      context_threshold_mode: isCompact ? COMPACT_CONTEXT_THRESHOLD_MODE : 'disabled',
     });
 
     const genericItems = url
@@ -163,14 +160,14 @@ export class BraveLLMContextSearchTool {
       };
     }
 
-    const outputLimit = maxOutputChars ?? COMPACT_DEFAULTS.maxOutputChars;
-    const snippetCharLimit = maxSnippetChars ?? COMPACT_DEFAULTS.maxSnippetChars;
+    const outputLimit = maxOutputChars ?? this.defaults.maxOutputChars;
+    const snippetCharLimit = maxSnippetChars ?? this.defaults.maxSnippetChars;
     const queryTerms = this.extractQueryTerms(query);
     const compactLines: string[] = [];
     let outputChars = 0;
     let totalSnippetCount = 0;
-    const globalSnippetLimit = effectiveMaximumNumberOfSnippets ?? COMPACT_DEFAULTS.maximumNumberOfSnippets;
-    const perUrlSnippetLimit = effectiveMaximumNumberOfSnippetsPerUrl ?? COMPACT_DEFAULTS.maximumNumberOfSnippetsPerUrl;
+    const globalSnippetLimit = effectiveMaximumNumberOfSnippets ?? this.defaults.maximumNumberOfSnippets;
+    const perUrlSnippetLimit = effectiveMaximumNumberOfSnippetsPerUrl ?? this.defaults.maximumNumberOfSnippetsPerUrl;
 
     for (const item of genericItems) {
       if (totalSnippetCount >= globalSnippetLimit)

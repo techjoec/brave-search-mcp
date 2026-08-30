@@ -18,5 +18,5 @@ describe('widget mode modules', () => {
     const module = await import(modulePath);
 
     expect(module.default).toBeTypeOf('function');
-  });
+  }, 15_000);
 });

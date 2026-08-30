@@ -1,12 +1,15 @@
 import type { AuthSource, TransportKind } from '../auth/identity-context.js';
 import type { PreInterceptorResult, ToolAfterInterceptorContext, ToolInterceptor, ToolInterceptorContext } from './tool-helpers.js';
 import { createHash } from 'node:crypto';
+import { createConnection } from 'node:net';
 import process from 'node:process';
 
 export interface AuditLoggingConfig {
   auditLoggingEnabled: boolean;
   logRawInputs: boolean;
   requireJustification: boolean;
+  sinkHost?: string;
+  sinkPort?: number;
 }
 
 export interface AuditEvent {
@@ -16,6 +19,9 @@ export interface AuditEvent {
   transport: TransportKind;
   authSource: AuthSource;
   callerId?: string;
+  client?: string;
+  cwd?: string;
+  sessionId?: string;
   toolName: string;
   outcome: 'success' | 'error' | 'denied';
   isFallback: boolean;
@@ -36,10 +42,23 @@ export interface AuditEvent {
   denyCode?: string;
   denyReason?: string;
   errorMessage?: string;
+  input?: Readonly<Record<string, unknown>>;
+  effectiveInput?: Readonly<Record<string, unknown>>;
+  result?: Readonly<unknown>;
 }
 
-export function writeAuditEvent(event: AuditEvent): void {
-  process.stderr.write(`${JSON.stringify(event)}\n`);
+export function writeAuditEvent(event: AuditEvent, sinkHost?: string, sinkPort?: number): void {
+  const payload = `${JSON.stringify(event)}\n`;
+  if (!sinkHost || !sinkPort) {
+    process.stderr.write(payload);
+    return;
+  }
+
+  const socket = createConnection({ host: sinkHost, port: sinkPort });
+  socket.unref();
+  socket.setTimeout(1000, () => socket.destroy(new Error('audit sink timeout')));
+  socket.once('connect', () => socket.end(payload));
+  socket.once('error', error => console.error(`Audit sink error: ${error.message}`));
 }
 
 export class AuditLoggingInterceptor implements ToolInterceptor {
@@ -65,7 +84,7 @@ export class AuditLoggingInterceptor implements ToolInterceptor {
   async after(context: ToolAfterInterceptorContext): Promise<void> {
     if (!this.config.auditLoggingEnabled)
       return;
-    writeAuditEvent(this.buildEvent(context));
+    writeAuditEvent(this.buildEvent(context), this.config.sinkHost, this.config.sinkPort);
   }
 
   private buildEvent(context: ToolAfterInterceptorContext): AuditEvent {
@@ -81,6 +100,9 @@ export class AuditLoggingInterceptor implements ToolInterceptor {
       transport: context.transport,
       authSource: context.authSource,
       ...(context.callerId ? { callerId: context.callerId } : {}),
+      ...(context.client ? { client: context.client } : {}),
+      ...(context.cwd ? { cwd: context.cwd } : {}),
+      ...(context.sessionId ? { sessionId: context.sessionId } : {}),
       toolName: context.toolName,
       outcome: context.outcome,
       isFallback: context.isFallback,
@@ -99,6 +121,13 @@ export class AuditLoggingInterceptor implements ToolInterceptor {
       ...(context.denyCode ? { denyCode: context.denyCode } : {}),
       ...(context.denyReason ? { denyReason: context.denyReason } : {}),
       ...(context.errorMessage ? { errorMessage: context.errorMessage } : {}),
+      ...(this.config.logRawInputs
+        ? {
+            input: context.input,
+            effectiveInput: context.effectiveInput,
+            result: context.result,
+          }
+        : {}),
     };
   }
 

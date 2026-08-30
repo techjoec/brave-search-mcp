@@ -1,3 +1,4 @@
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ToolAfterInterceptorContext, ToolInterceptorContext } from '../../src/tools/tool-helpers.js';
 import process from 'node:process';
 import { describe, expect, it, vi } from 'vitest';
@@ -32,6 +33,7 @@ function makeAfterContext(
     transport: overrides.transport ?? 'stdio',
     authSource: overrides.authSource ?? 'stdio-process',
     callerId: overrides.callerId,
+    result: overrides.result ?? Object.freeze({ content: [{ type: 'text', text: 'delivered result' }] } satisfies CallToolResult),
   };
 }
 
@@ -80,6 +82,9 @@ describe('auditLoggingInterceptor', () => {
     expect(event.justification).toBe('Allowed for debugging');
     expect(event.queryHash).toBeUndefined();
     expect(event.justificationHash).toBeUndefined();
+    expect(event.input).toEqual({ query: 'visible text', justification: 'Allowed for debugging' });
+    expect(event.effectiveInput).toEqual({ query: 'visible text', justification: 'Allowed for debugging' });
+    expect(event.result).toEqual({ content: [{ type: 'text', text: 'delivered result' }] });
     stderrSpy.mockRestore();
   });
 
@@ -168,12 +173,18 @@ describe('auditLoggingInterceptor', () => {
       transport: 'http',
       authSource: 'http-api-key',
       callerId: 'tenant-42',
+      client: 'codex',
+      cwd: '/tmp/what',
+      sessionId: 'session-123',
     }));
 
     const event = JSON.parse(String(stderrSpy.mock.calls[0][0]));
     expect(event.transport).toBe('http');
     expect(event.authSource).toBe('http-api-key');
     expect(event.callerId).toBe('tenant-42');
+    expect(event.client).toBe('codex');
+    expect(event.cwd).toBe('/tmp/what');
+    expect(event.sessionId).toBe('session-123');
     stderrSpy.mockRestore();
   });
 

@@ -1,0 +1,25 @@
+#!/sbin/openrc-run
+
+name="global-brave-mcp"
+description="Shared loopback Brave Search MCP server"
+command="/usr/bin/node"
+command_args="/srv/global-brave-mcp/bin/index.js --http"
+command_user="brave-mcp:brave-mcp"
+command_background="yes"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="/var/log/${RC_SVCNAME}.log"
+error_log="/var/log/${RC_SVCNAME}.log"
+
+export HOST="127.0.0.1"
+export PORT="3001"
+export BRAVE_MCP_CONFIG="/srv/global-brave-mcp/etc/config.toml"
+export BRAVE_API_KEY_FILE="/srv/global-brave-mcp/etc/brave-api-key"
+export NODE_USE_ENV_PROXY="1"
+export HTTPS_PROXY="http://127.0.0.1:8888"
+export HTTP_PROXY="http://127.0.0.1:8888"
+export NO_PROXY="127.0.0.1,localhost"
+
+depend() {
+  need localmount
+  after bootmisc
+}

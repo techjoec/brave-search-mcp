@@ -1,0 +1,19 @@
+[Unit]
+Description=Exact-host egress proxy for global Brave MCP
+After=network-online.target
+
+[Service]
+Type=simple
+User=tinyproxy
+Group=tinyproxy
+RuntimeDirectory=global-brave-mcp-tinyproxy
+ExecStart=/usr/bin/tinyproxy -d -c /etc/tinyproxy/global-brave-mcp.conf
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

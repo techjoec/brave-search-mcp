@@ -1,5 +1,6 @@
 import type { FeatureConfig } from './config-loader.js';
 import type { LocalWebFallbackExecutor, ToolInterceptor, ToolLogger } from './tools/tool-helpers.js';
+import type { CounterState } from './tools/UsageGuardrailInterceptor.js';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -44,6 +45,14 @@ interface ServerTools {
   llmContext: BraveLLMContextSearchTool;
 }
 
+export interface BraveMcpRuntimeState {
+  guardrailBuckets: Map<string, CounterState>;
+}
+
+export function createBraveMcpRuntimeState(): BraveMcpRuntimeState {
+  return { guardrailBuckets: new Map() };
+}
+
 export class BraveMcpServer {
   private server: McpServer;
   private tools: ServerTools;
@@ -60,6 +69,7 @@ export class BraveMcpServer {
     isUI: boolean = false,
     braveSearchInstance?: BraveSearch,
     featureConfig: FeatureConfig = createDefaultFeatureConfig(),
+    private readonly runtimeState: BraveMcpRuntimeState = createBraveMcpRuntimeState(),
   ) {
     this.server = new McpServer(
       {
@@ -95,7 +105,13 @@ export class BraveMcpServer {
     const local = new BraveLocalSearchTool(log, braveSearch, executeWebFallback, isUI, activeInterceptors);
     const news = new BraveNewsSearchTool(log, braveSearch, isUI, activeInterceptors);
     const video = new BraveVideoSearchTool(log, braveSearch, isUI, activeInterceptors);
-    const llmContext = new BraveLLMContextSearchTool(log, braveSearch, isUI, activeInterceptors);
+    const llmContext = new BraveLLMContextSearchTool(
+      log,
+      braveSearch,
+      isUI,
+      activeInterceptors,
+      featureConfig.llmContext,
+    );
 
     this.tools = {
       image,
@@ -130,7 +146,7 @@ export class BraveMcpServer {
         requestLimit,
         windowMs: this.featureConfig.guardrail.windowSeconds * 1000,
         cooldownMs: this.featureConfig.guardrail.cooldownSeconds * 1000,
-      }));
+      }, this.runtimeState.guardrailBuckets));
     }
     const auditLoggingEnabled = this.featureConfig.audit.enabled;
     const logRawInputs = this.featureConfig.audit.logRaw;
@@ -140,6 +156,8 @@ export class BraveMcpServer {
         auditLoggingEnabled,
         logRawInputs,
         requireJustification,
+        sinkHost: this.featureConfig.audit.sinkHost,
+        sinkPort: this.featureConfig.audit.sinkPort,
       }));
     }
     return interceptors;

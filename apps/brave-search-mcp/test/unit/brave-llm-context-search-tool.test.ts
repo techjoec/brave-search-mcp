@@ -162,12 +162,12 @@ describe('braveLLMContextSearchTool', () => {
     });
 
     expect(mockBraveSearch.llmContextSearch).toHaveBeenCalledWith('banana', {
-      count: undefined,
-      maximum_number_of_urls: undefined,
-      maximum_number_of_tokens: undefined,
-      maximum_number_of_snippets: undefined,
-      maximum_number_of_tokens_per_url: undefined,
-      maximum_number_of_snippets_per_url: undefined,
+      count: 8,
+      maximum_number_of_urls: 8,
+      maximum_number_of_tokens: 2048,
+      maximum_number_of_snippets: 16,
+      maximum_number_of_tokens_per_url: 512,
+      maximum_number_of_snippets_per_url: 2,
       context_threshold_mode: 'disabled',
     });
 

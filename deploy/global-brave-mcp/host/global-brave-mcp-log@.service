@@ -1,0 +1,17 @@
+[Unit]
+Description=Write one global Brave MCP search audit record
+
+[Service]
+Type=oneshot
+User=global-brave-mcp-log
+Group=global-brave-mcp-log
+ExecStart=/usr/bin/python3 /usr/local/libexec/global-brave-mcp-log-writer.py
+StandardInput=socket
+StandardOutput=journal
+StandardError=journal
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/logs/Brave_MCP/searches

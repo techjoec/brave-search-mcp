@@ -124,6 +124,9 @@ export interface ToolInterceptorContext<TInput extends Record<string, unknown> =
   authSource: AuthSource;
   callerId?: string;
   scopes?: string[];
+  client?: string;
+  cwd?: string;
+  sessionId?: string;
 }
 
 export interface ToolAfterInterceptorContext<TInput extends Record<string, unknown> = Record<string, unknown>>
@@ -135,6 +138,7 @@ export interface ToolAfterInterceptorContext<TInput extends Record<string, unkno
   denyCode?: string;
   denyReason?: string;
   errorMessage?: string;
+  result: Readonly<CallToolResult>;
 }
 
 export interface PreInterceptorResult {
@@ -280,13 +284,20 @@ export async function executeTool<TInput>({
     authSource: requestContext.identity.authSource,
     ...(requestContext.identity.callerId ? { callerId: requestContext.identity.callerId } : {}),
     ...(requestContext.identity.scopes?.length ? { scopes: requestContext.identity.scopes } : {}),
+    ...(requestContext.metadata?.client ? { client: requestContext.metadata.client } : {}),
+    ...(requestContext.metadata?.cwd ? { cwd: requestContext.metadata.cwd } : {}),
+    ...(requestContext.metadata?.sessionId ? { sessionId: requestContext.metadata.sessionId } : {}),
   };
   let wasRedacted = false;
   let denyCode: string | undefined;
   let denyReason: string | undefined;
   let errorMessage: string | undefined;
 
-  async function runAfterHooks(outcome: ToolExecutionOutcome, effectiveInputForAfter: Readonly<Record<string, unknown>>): Promise<void> {
+  async function runAfterHooks(
+    outcome: ToolExecutionOutcome,
+    effectiveInputForAfter: Readonly<Record<string, unknown>>,
+    result: CallToolResult,
+  ): Promise<void> {
     if (!interceptors?.length)
       return;
     const afterContext: ToolAfterInterceptorContext = {
@@ -295,6 +306,7 @@ export async function executeTool<TInput>({
       endedAtMs: Date.now(),
       effectiveInput: effectiveInputForAfter,
       wasRedacted,
+      result,
       ...(denyCode ? { denyCode } : {}),
       ...(denyReason ? { denyReason } : {}),
       ...(errorMessage ? { errorMessage } : {}),
@@ -329,7 +341,7 @@ export async function executeTool<TInput>({
           const denyResult = buildErrorResult
             ? buildErrorResult(input, denyError)
             : buildDefaultErrorResult(toolName, denyError);
-          await runAfterHooks('denied', beforeContext.input);
+          await runAfterHooks('denied', beforeContext.input, denyResult);
           return denyResult;
         }
         if (result?.redactedInput) {
@@ -341,15 +353,16 @@ export async function executeTool<TInput>({
     }
 
     const toolResult = await executeCore(effectiveInput);
-    await runAfterHooks('success', beforeContext.input);
+    await runAfterHooks('success', beforeContext.input, toolResult);
     return toolResult;
   }
   catch (error) {
     console.error(`Error executing ${toolName}:`, error);
     errorMessage = getErrorMessage(error);
-    await runAfterHooks('error', beforeContext.input);
-    return buildErrorResult
+    const errorResult = buildErrorResult
       ? buildErrorResult(input, error)
       : buildDefaultErrorResult(toolName, error);
+    await runAfterHooks('error', beforeContext.input, errorResult);
+    return errorResult;
   }
 }

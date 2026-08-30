@@ -139,7 +139,7 @@ There are two configuration modes:
 
 These settings are always read from the process environment, regardless of mode:
 
-- `BRAVE_API_KEY` (required): Brave Search API key.
+- `BRAVE_API_KEY` or `BRAVE_API_KEY_FILE` (required): Brave Search API key value, or a file containing it. The file setting takes precedence when both are present.
 - `PORT` (optional): HTTP port (default: `3001`).
 - `HOST` (optional): Interface to bind to (default: `0.0.0.0`).
 - `BRAVE_MCP_CONFIG` (optional): Absolute or relative path to a TOML config file for feature settings.
@@ -157,7 +157,13 @@ When `BRAVE_MCP_CONFIG` is not set, these feature env vars are supported:
 - `BRAVE_MCP_WINDOW_SECONDS`: Non-negative integer rolling window size.
 - `BRAVE_MCP_COOLDOWN_SECONDS`: Non-negative integer cooldown after the limit is exceeded.
 - `BRAVE_MCP_AUDIT_LOG`: `true` to emit audit logs.
-- `BRAVE_MCP_AUDIT_LOG_RAW`: `true` to include raw query text in audit logs.
+- `BRAVE_MCP_AUDIT_LOG_RAW`: `true` to include the original input, effective input, and exact delivered MCP result in audit logs.
+- `BRAVE_MCP_AUDIT_SINK_HOST` and `BRAVE_MCP_AUDIT_SINK_PORT`: Optional best-effort TCP audit sink. Both must be set. Sink failures never fail a tool call.
+- `BRAVE_MCP_CORS_ORIGINS`: Optional comma-separated exact origin allowlist. CORS is disabled when unset.
+- `BRAVE_MCP_LLM_COUNT`, `BRAVE_MCP_LLM_MAX_URLS`, `BRAVE_MCP_LLM_MAX_TOKENS`, `BRAVE_MCP_LLM_MAX_SNIPPETS`: Defaults and compact-mode caps for LLM context retrieval.
+- `BRAVE_MCP_LLM_MAX_TOKENS_PER_URL`, `BRAVE_MCP_LLM_MAX_SNIPPETS_PER_URL`: Per-URL defaults and compact-mode caps.
+- `BRAVE_MCP_LLM_RESPONSE_MODE`: Default `compact` or `full` response mode.
+- `BRAVE_MCP_LLM_MAX_SNIPPET_CHARS`, `BRAVE_MCP_LLM_MAX_OUTPUT_CHARS`: Local compact-response character caps.
 - `BRAVE_MCP_REQUIRE_JUSTIFICATION`: `true` to reject tool calls without a `justification` string.
 
 Examples:
@@ -196,8 +202,10 @@ verifyStrategy = "jwks"
 
 [audit]
 enabled = true
-logRaw = false
+logRaw = true
 hmacSecret = "audit-secret"
+sinkHost = "127.0.0.1"
+sinkPort = 1515
 
 [policy]
 file = "/etc/brave-mcp/policy.json"
@@ -215,13 +223,26 @@ allowedHosts = [
   "127.0.0.1",
   "my-app.ngrok-free.app",
 ]
+corsOrigins = [ "https://client.example" ]
+
+[llmContext]
+count = 8
+maximumNumberOfUrls = 8
+maximumNumberOfTokens = 2048
+maximumNumberOfSnippets = 16
+maximumNumberOfTokensPerUrl = 512
+maximumNumberOfSnippetsPerUrl = 2
+responseMode = "compact"
+maxSnippetChars = 400
+maxOutputChars = 8000
 ```
 
 Notes:
 
-- `BRAVE_API_KEY`, `PORT`, and `HOST` remain environment-only even in file mode.
+- `BRAVE_API_KEY`, `BRAVE_API_KEY_FILE`, `PORT`, and `HOST` remain environment-only even in file mode.
 - If you set overlapping feature env vars such as `BRAVE_MCP_REQUEST_LIMIT` or `ALLOWED_HOSTS` alongside `BRAVE_MCP_CONFIG`, startup warns that they are being ignored.
 - Unknown TOML keys also emit warnings so typos like `[guardrails]` are visible before you debug runtime behavior.
+- HTTP callers may attach `X-Brave-Client`, `X-Brave-Cwd`, and `X-Brave-Session`; audit records copy these values so a validating sink can route project/session logs.
 
 To validate a config file without starting the server, use the packaged entrypoint after building the app workspace:
 

@@ -1,0 +1,11 @@
+[Unit]
+Description=Socket for global Brave MCP search audit records
+
+[Socket]
+ListenStream=/run/global-brave-mcp/log.sock
+SocketMode=0600
+Accept=yes
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

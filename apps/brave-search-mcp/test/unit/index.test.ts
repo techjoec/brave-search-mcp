@@ -1,4 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockState = vi.hoisted(() => {
@@ -6,6 +7,7 @@ const mockState = vi.hoisted(() => {
     resolveRuntimeConfigMock: vi.fn(),
     startServerMock: vi.fn(),
     braveMcpServerMock: vi.fn(),
+    runtimeState: { guardrailBuckets: new Map() },
   };
 });
 
@@ -24,6 +26,7 @@ vi.mock('../../src/server-utils.js', () => {
 vi.mock('../../src/server.js', () => {
   return {
     BraveMcpServer: mockState.braveMcpServerMock,
+    createBraveMcpRuntimeState: vi.fn(() => mockState.runtimeState),
   };
 });
 
@@ -34,6 +37,17 @@ function createFeatureConfig() {
     policy: { redact: false },
     guardrail: { windowSeconds: 0, cooldownSeconds: 0, requireJustification: false },
     server: {},
+    llmContext: {
+      count: 8,
+      maximumNumberOfUrls: 8,
+      maximumNumberOfTokens: 2048,
+      maximumNumberOfSnippets: 16,
+      maximumNumberOfTokensPerUrl: 512,
+      maximumNumberOfSnippetsPerUrl: 2,
+      responseMode: 'compact',
+      maxSnippetChars: 400,
+      maxOutputChars: 8000,
+    },
   };
 }
 
@@ -45,12 +59,14 @@ async function importIndexModule() {
 describe('index entrypoint', () => {
   const originalArgv = [...process.argv];
   const originalApiKey = process.env.BRAVE_API_KEY;
+  const originalApiKeyFile = process.env.BRAVE_API_KEY_FILE;
 
   beforeEach(() => {
     vi.clearAllMocks();
     vi.resetModules();
     process.argv = ['node', 'index.js'];
     process.env.BRAVE_API_KEY = 'test-api-key';
+    delete process.env.BRAVE_API_KEY_FILE;
 
     mockState.resolveRuntimeConfigMock.mockReturnValue({
       mode: 'env',
@@ -68,6 +84,10 @@ describe('index entrypoint', () => {
   afterEach(() => {
     process.argv = [...originalArgv];
     process.env.BRAVE_API_KEY = originalApiKey;
+    if (originalApiKeyFile === undefined)
+      delete process.env.BRAVE_API_KEY_FILE;
+    else
+      process.env.BRAVE_API_KEY_FILE = originalApiKeyFile;
     vi.restoreAllMocks();
   });
 
@@ -103,11 +123,11 @@ describe('index entrypoint', () => {
     }));
     expect(mockState.startServerMock).toHaveBeenCalledTimes(1);
     expect(capturedHttpFlag).toBe(true);
-    expect(capturedOptions).toEqual({ allowedHosts: ['localhost'], auth: featureConfig.auth });
+    expect(capturedOptions).toEqual({ allowedHosts: ['localhost'], corsOrigins: undefined, auth: featureConfig.auth });
     expect(capturedCreateServer).toBeTypeOf('function');
 
     const serverInstance = capturedCreateServer!();
-    expect(mockState.braveMcpServerMock).toHaveBeenCalledWith('test-api-key', true, undefined, featureConfig);
+    expect(mockState.braveMcpServerMock).toHaveBeenCalledWith('test-api-key', true, undefined, featureConfig, mockState.runtimeState);
     expect(serverInstance).toEqual({
       apiKey: 'test-api-key',
       isUI: true,
@@ -129,6 +149,22 @@ describe('index entrypoint', () => {
     expect(mockState.braveMcpServerMock).not.toHaveBeenCalled();
   });
 
+  it('loads the Brave API key from BRAVE_API_KEY_FILE', async () => {
+    process.env.BRAVE_API_KEY_FILE = fileURLToPath(new URL('../fixtures/brave-api-key.txt', import.meta.url));
+
+    await importIndexModule();
+    const createServer = mockState.startServerMock.mock.calls[0][0] as () => McpServer;
+    createServer();
+
+    expect(mockState.braveMcpServerMock).toHaveBeenCalledWith(
+      'test-api-key-from-file',
+      false,
+      undefined,
+      expect.any(Object),
+      mockState.runtimeState,
+    );
+  });
+
   it('logs and exits when BRAVE_API_KEY is missing', async () => {
     delete process.env.BRAVE_API_KEY;
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -136,7 +172,7 @@ describe('index entrypoint', () => {
 
     await importIndexModule();
 
-    expect(consoleErrorSpy).toHaveBeenCalledWith('Error: BRAVE_API_KEY environment variable is required');
+    expect(consoleErrorSpy).toHaveBeenCalledWith('Error: BRAVE_API_KEY or BRAVE_API_KEY_FILE is required');
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(mockState.startServerMock).not.toHaveBeenCalled();
     expect(mockState.braveMcpServerMock).not.toHaveBeenCalled();

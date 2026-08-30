@@ -6,15 +6,16 @@ export interface GuardrailConfig {
   cooldownMs: number; // 0 = no extra cooldown; positive = block duration after limit hit in ms
 }
 
-interface CounterState {
+export interface CounterState {
   requestTimestamps: number[];
   cooldownUntilMs: number;
 }
 
 export class UsageGuardrailInterceptor implements ToolInterceptor {
-  private readonly buckets = new Map<string, CounterState>();
-
-  constructor(private readonly config: GuardrailConfig) {}
+  constructor(
+    private readonly config: GuardrailConfig,
+    private readonly buckets: Map<string, CounterState> = new Map(),
+  ) {}
 
   async before(context: ToolInterceptorContext): Promise<PreInterceptorResult | void> {
     // 1. Skip fallback calls — do not increment or check limits.

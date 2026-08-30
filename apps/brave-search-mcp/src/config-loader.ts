@@ -23,6 +23,8 @@ export interface AuditConfig {
   enabled: boolean;
   logRaw: boolean;
   hmacSecret?: string;
+  sinkHost?: string;
+  sinkPort?: number;
 }
 
 export interface PolicyConfig {
@@ -39,6 +41,21 @@ export interface GuardrailConfigResolved {
 
 export interface ServerFeatureConfig {
   allowedHosts?: string[];
+  corsOrigins?: string[];
+}
+
+export type LlmContextResponseMode = 'compact' | 'full';
+
+export interface LlmContextConfig {
+  count: number;
+  maximumNumberOfUrls: number;
+  maximumNumberOfTokens: number;
+  maximumNumberOfSnippets: number;
+  maximumNumberOfTokensPerUrl: number;
+  maximumNumberOfSnippetsPerUrl: number;
+  responseMode: LlmContextResponseMode;
+  maxSnippetChars: number;
+  maxOutputChars: number;
 }
 
 export interface FeatureConfig {
@@ -47,6 +64,7 @@ export interface FeatureConfig {
   policy: PolicyConfig;
   guardrail: GuardrailConfigResolved;
   server: ServerFeatureConfig;
+  llmContext: LlmContextConfig;
 }
 
 export type ConfigSourceMode = 'env' | 'file';
@@ -93,10 +111,34 @@ const IGNORED_FEATURE_ENV_VARS = [
   'BRAVE_MCP_AUDIT_LOG',
   'BRAVE_MCP_AUDIT_LOG_RAW',
   'BRAVE_MCP_AUDIT_HMAC_SECRET',
+  'BRAVE_MCP_AUDIT_SINK_HOST',
+  'BRAVE_MCP_AUDIT_SINK_PORT',
   'BRAVE_MCP_REQUIRE_JUSTIFICATION',
+  'BRAVE_MCP_CORS_ORIGINS',
+  'BRAVE_MCP_LLM_COUNT',
+  'BRAVE_MCP_LLM_MAX_URLS',
+  'BRAVE_MCP_LLM_MAX_TOKENS',
+  'BRAVE_MCP_LLM_MAX_SNIPPETS',
+  'BRAVE_MCP_LLM_MAX_TOKENS_PER_URL',
+  'BRAVE_MCP_LLM_MAX_SNIPPETS_PER_URL',
+  'BRAVE_MCP_LLM_RESPONSE_MODE',
+  'BRAVE_MCP_LLM_MAX_SNIPPET_CHARS',
+  'BRAVE_MCP_LLM_MAX_OUTPUT_CHARS',
 ] as const;
 
 const SECRET_MASK = '***';
+
+export const DEFAULT_LLM_CONTEXT_CONFIG: Readonly<LlmContextConfig> = {
+  count: 8,
+  maximumNumberOfUrls: 8,
+  maximumNumberOfTokens: 2048,
+  maximumNumberOfSnippets: 16,
+  maximumNumberOfTokensPerUrl: 512,
+  maximumNumberOfSnippetsPerUrl: 2,
+  responseMode: 'compact',
+  maxSnippetChars: 400,
+  maxOutputChars: 8000,
+};
 
 export function createDefaultFeatureConfig(): FeatureConfig {
   return {
@@ -114,6 +156,7 @@ export function createDefaultFeatureConfig(): FeatureConfig {
       requireJustification: false,
     },
     server: {},
+    llmContext: { ...DEFAULT_LLM_CONTEXT_CONFIG },
   };
 }
 
@@ -182,7 +225,10 @@ function resolveFeatureConfigFromEnv(env: NodeJS.ProcessEnv): FeatureConfig {
     enabled: parseEnvBoolean(env.BRAVE_MCP_AUDIT_LOG),
     logRaw: parseEnvBoolean(env.BRAVE_MCP_AUDIT_LOG_RAW),
     hmacSecret: normalizeOptionalString(env.BRAVE_MCP_AUDIT_HMAC_SECRET),
+    sinkHost: normalizeOptionalString(env.BRAVE_MCP_AUDIT_SINK_HOST),
+    sinkPort: parseEnvIntegerInRange(env.BRAVE_MCP_AUDIT_SINK_PORT, 'BRAVE_MCP_AUDIT_SINK_PORT', 1, 65535),
   };
+  validateAuditSink(featureConfig.audit, 'audit');
   featureConfig.policy = {
     file: normalizeOptionalString(env.BRAVE_MCP_POLICY_FILE),
     redact: parseEnvBoolean(env.BRAVE_MCP_POLICY_REDACT),
@@ -195,7 +241,9 @@ function resolveFeatureConfigFromEnv(env: NodeJS.ProcessEnv): FeatureConfig {
   };
   featureConfig.server = {
     allowedHosts: parseAllowedHostsEnv(env.ALLOWED_HOSTS),
+    corsOrigins: parseCommaSeparatedEnv(env.BRAVE_MCP_CORS_ORIGINS),
   };
+  featureConfig.llmContext = resolveLlmContextConfigFromEnv(env);
 
   return featureConfig;
 }
@@ -251,6 +299,7 @@ function validateFeatureConfig(parsed: ConfigTable): FeatureConfig {
     policy: validatePolicyConfig(readOptionalTable(parsed, 'policy'), 'policy'),
     guardrail: validateGuardrailConfig(readOptionalTable(parsed, 'guardrail'), 'guardrail'),
     server: validateServerFeatureConfig(readOptionalTable(parsed, 'server'), 'server'),
+    llmContext: validateLlmContextConfig(readOptionalTable(parsed, 'llmContext'), 'llmContext'),
   };
 }
 
@@ -317,11 +366,15 @@ function validateAuditConfig(table: ConfigTable | undefined, path: string): Audi
     };
   }
 
-  return {
+  const config = {
     enabled: validateBooleanWithDefault(table.enabled, `${path}.enabled`, false),
     logRaw: validateBooleanWithDefault(table.logRaw, `${path}.logRaw`, false),
     hmacSecret: validateOptionalString(table.hmacSecret, `${path}.hmacSecret`),
+    sinkHost: validateOptionalString(table.sinkHost, `${path}.sinkHost`),
+    sinkPort: validateOptionalPositiveInteger(table.sinkPort, `${path}.sinkPort`),
   };
+  validateAuditSink(config, path);
+  return config;
 }
 
 function validatePolicyConfig(table: ConfigTable | undefined, path: string): PolicyConfig {
@@ -357,6 +410,24 @@ function validateServerFeatureConfig(table: ConfigTable | undefined, path: strin
 
   return {
     allowedHosts: validateOptionalStringArray(table.allowedHosts, `${path}.allowedHosts`),
+    corsOrigins: validateOptionalStringArray(table.corsOrigins, `${path}.corsOrigins`),
+  };
+}
+
+function validateLlmContextConfig(table: ConfigTable | undefined, path: string): LlmContextConfig {
+  if (!table)
+    return { ...DEFAULT_LLM_CONTEXT_CONFIG };
+
+  return {
+    count: validateIntegerInRangeWithDefault(table.count, `${path}.count`, DEFAULT_LLM_CONTEXT_CONFIG.count, 1, 50),
+    maximumNumberOfUrls: validateIntegerInRangeWithDefault(table.maximumNumberOfUrls, `${path}.maximumNumberOfUrls`, DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfUrls, 1, 50),
+    maximumNumberOfTokens: validateIntegerInRangeWithDefault(table.maximumNumberOfTokens, `${path}.maximumNumberOfTokens`, DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfTokens, 1024, 32768),
+    maximumNumberOfSnippets: validateIntegerInRangeWithDefault(table.maximumNumberOfSnippets, `${path}.maximumNumberOfSnippets`, DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfSnippets, 1, 100),
+    maximumNumberOfTokensPerUrl: validateIntegerInRangeWithDefault(table.maximumNumberOfTokensPerUrl, `${path}.maximumNumberOfTokensPerUrl`, DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfTokensPerUrl, 512, 8192),
+    maximumNumberOfSnippetsPerUrl: validateIntegerInRangeWithDefault(table.maximumNumberOfSnippetsPerUrl, `${path}.maximumNumberOfSnippetsPerUrl`, DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfSnippetsPerUrl, 1, 100),
+    responseMode: validateResponseModeWithDefault(table.responseMode, `${path}.responseMode`, DEFAULT_LLM_CONTEXT_CONFIG.responseMode),
+    maxSnippetChars: validateIntegerInRangeWithDefault(table.maxSnippetChars, `${path}.maxSnippetChars`, DEFAULT_LLM_CONTEXT_CONFIG.maxSnippetChars, 80, 4000),
+    maxOutputChars: validateIntegerInRangeWithDefault(table.maxOutputChars, `${path}.maxOutputChars`, DEFAULT_LLM_CONTEXT_CONFIG.maxOutputChars, 1000, 100000),
   };
 }
 
@@ -384,6 +455,8 @@ function collectUnknownKeys(parsed: ConfigTable): string[] {
       enabled: true,
       logRaw: true,
       hmacSecret: true,
+      sinkHost: true,
+      sinkPort: true,
     },
     policy: {
       file: true,
@@ -397,6 +470,18 @@ function collectUnknownKeys(parsed: ConfigTable): string[] {
     },
     server: {
       allowedHosts: true,
+      corsOrigins: true,
+    },
+    llmContext: {
+      count: true,
+      maximumNumberOfUrls: true,
+      maximumNumberOfTokens: true,
+      maximumNumberOfSnippets: true,
+      maximumNumberOfTokensPerUrl: true,
+      maximumNumberOfSnippetsPerUrl: true,
+      responseMode: true,
+      maxSnippetChars: true,
+      maxOutputChars: true,
     },
   }, warnings);
   return warnings.sort();
@@ -438,6 +523,10 @@ function isPlainObject(value: unknown): value is ConfigTable {
 }
 
 function parseAllowedHostsEnv(value: string | undefined): string[] | undefined {
+  return parseCommaSeparatedEnv(value);
+}
+
+function parseCommaSeparatedEnv(value: string | undefined): string[] | undefined {
   const hosts = value
     ?.split(',')
     .map(host => host.trim())
@@ -464,6 +553,45 @@ function parseEnvPositiveInteger(value: string | undefined): number | undefined 
     return undefined;
   const parsed = Number(value);
   return parsed > 0 ? parsed : undefined;
+}
+
+function resolveLlmContextConfigFromEnv(env: NodeJS.ProcessEnv): LlmContextConfig {
+  return {
+    count: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_COUNT, 'BRAVE_MCP_LLM_COUNT', 1, 50) ?? DEFAULT_LLM_CONTEXT_CONFIG.count,
+    maximumNumberOfUrls: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_URLS, 'BRAVE_MCP_LLM_MAX_URLS', 1, 50) ?? DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfUrls,
+    maximumNumberOfTokens: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_TOKENS, 'BRAVE_MCP_LLM_MAX_TOKENS', 1024, 32768) ?? DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfTokens,
+    maximumNumberOfSnippets: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_SNIPPETS, 'BRAVE_MCP_LLM_MAX_SNIPPETS', 1, 100) ?? DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfSnippets,
+    maximumNumberOfTokensPerUrl: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_TOKENS_PER_URL, 'BRAVE_MCP_LLM_MAX_TOKENS_PER_URL', 512, 8192) ?? DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfTokensPerUrl,
+    maximumNumberOfSnippetsPerUrl: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_SNIPPETS_PER_URL, 'BRAVE_MCP_LLM_MAX_SNIPPETS_PER_URL', 1, 100) ?? DEFAULT_LLM_CONTEXT_CONFIG.maximumNumberOfSnippetsPerUrl,
+    responseMode: parseEnvResponseMode(env.BRAVE_MCP_LLM_RESPONSE_MODE) ?? DEFAULT_LLM_CONTEXT_CONFIG.responseMode,
+    maxSnippetChars: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_SNIPPET_CHARS, 'BRAVE_MCP_LLM_MAX_SNIPPET_CHARS', 80, 4000) ?? DEFAULT_LLM_CONTEXT_CONFIG.maxSnippetChars,
+    maxOutputChars: parseEnvIntegerInRange(env.BRAVE_MCP_LLM_MAX_OUTPUT_CHARS, 'BRAVE_MCP_LLM_MAX_OUTPUT_CHARS', 1000, 100000) ?? DEFAULT_LLM_CONTEXT_CONFIG.maxOutputChars,
+  };
+}
+
+function parseEnvIntegerInRange(
+  value: string | undefined,
+  name: string,
+  minimum: number,
+  maximum: number,
+): number | undefined {
+  if (value === undefined)
+    return undefined;
+  if (!/^\d+$/.test(value))
+    throw new Error(`Config error: ${name} must be an integer between ${minimum} and ${maximum}, got ${JSON.stringify(value)}`);
+  const parsed = Number(value);
+  if (parsed < minimum || parsed > maximum)
+    throw new Error(`Config error: ${name} must be between ${minimum} and ${maximum}, got ${parsed}`);
+  return parsed;
+}
+
+function parseEnvResponseMode(value: string | undefined): LlmContextResponseMode | undefined {
+  const normalized = normalizeOptionalString(value);
+  if (!normalized)
+    return undefined;
+  if (normalized !== 'compact' && normalized !== 'full')
+    throw new Error(`Config error: BRAVE_MCP_LLM_RESPONSE_MODE must be "compact" or "full", got ${JSON.stringify(normalized)}`);
+  return normalized;
 }
 
 function parseEnvNonNegativeIntegerOrZero(value: string | undefined): number {
@@ -551,6 +679,39 @@ function validateNonNegativeInteger(value: unknown, path: string): number {
   return value as number;
 }
 
+function validateIntegerInRangeWithDefault(
+  value: unknown,
+  path: string,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+): number {
+  if (value === undefined)
+    return defaultValue;
+  if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum)
+    throw new Error(`Config error: ${path} must be an integer between ${minimum} and ${maximum}, got ${describeValue(value)}`);
+  return value as number;
+}
+
+function validateResponseModeWithDefault(
+  value: unknown,
+  path: string,
+  defaultValue: LlmContextResponseMode,
+): LlmContextResponseMode {
+  if (value === undefined)
+    return defaultValue;
+  if (value !== 'compact' && value !== 'full')
+    throw new Error(`Config error: ${path} must be "compact" or "full", got ${describeValue(value)}`);
+  return value;
+}
+
+function validateAuditSink(config: AuditConfig, path: string): void {
+  if ((config.sinkHost && !config.sinkPort) || (!config.sinkHost && config.sinkPort))
+    throw new Error(`Config error: ${path}.sinkHost and ${path}.sinkPort must be set together`);
+  if (config.sinkPort !== undefined && config.sinkPort > 65535)
+    throw new Error(`Config error: ${path}.sinkPort must be between 1 and 65535, got ${config.sinkPort}`);
+}
+
 function validateOptionalVerifyStrategy(value: unknown, path: string): 'jwks' | 'introspect' | undefined {
   if (value === undefined)
     return undefined;
@@ -599,6 +760,7 @@ function maskFeatureConfig(featureConfig: FeatureConfig): unknown {
     policy: { ...featureConfig.policy },
     guardrail: { ...featureConfig.guardrail },
     server: { ...featureConfig.server },
+    llmContext: { ...featureConfig.llmContext },
   };
 }
 

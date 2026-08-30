@@ -15,8 +15,9 @@ export default defineConfig({
   splitting: false,
   dts: false,
   shims: true,
-  noExternal: [/^(?!zod(?:\/.*)?$).+/],
-  external: [/^zod(?:\/.*)?$/],
+  // The published/runtime artifact is intentionally standalone. The Incus
+  // deployment copies only dist/index.js and does not carry node_modules.
+  noExternal: [/.+/],
   banner: {
     js: 'import { createRequire as __createRequire } from "module";\nconst require = __createRequire(import.meta.url);',
   },

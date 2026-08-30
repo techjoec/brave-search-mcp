@@ -106,6 +106,42 @@ describe('config-loader', () => {
     expect(runtimeConfig.featureConfig.server.allowedHosts).toEqual(['localhost']);
   });
 
+  it('loads configurable compact LLM response defaults and audit sink settings from env', () => {
+    const runtimeConfig = resolveRuntimeConfig({
+      env: {
+        BRAVE_MCP_LLM_MAX_TOKENS: '4096',
+        BRAVE_MCP_LLM_MAX_TOKENS_PER_URL: '1024',
+        BRAVE_MCP_LLM_MAX_SNIPPET_CHARS: '240',
+        BRAVE_MCP_LLM_MAX_OUTPUT_CHARS: '6000',
+        BRAVE_MCP_AUDIT_SINK_HOST: '127.0.0.1',
+        BRAVE_MCP_AUDIT_SINK_PORT: '1515',
+        BRAVE_MCP_CORS_ORIGINS: 'https://one.example, https://two.example',
+      },
+      warn: () => {},
+    });
+
+    expect(runtimeConfig.featureConfig.llmContext).toMatchObject({
+      maximumNumberOfTokens: 4096,
+      maximumNumberOfTokensPerUrl: 1024,
+      maxSnippetChars: 240,
+      maxOutputChars: 6000,
+    });
+    expect(runtimeConfig.featureConfig.audit).toMatchObject({ sinkHost: '127.0.0.1', sinkPort: 1515 });
+    expect(runtimeConfig.featureConfig.server.corsOrigins).toEqual(['https://one.example', 'https://two.example']);
+  });
+
+  it('rejects incomplete or invalid audit sink settings', () => {
+    expect(() => resolveRuntimeConfig({
+      env: { BRAVE_MCP_AUDIT_SINK_HOST: '127.0.0.1' },
+      warn: () => {},
+    })).toThrow('audit.sinkHost and audit.sinkPort must be set together');
+
+    expect(() => resolveRuntimeConfig({
+      env: { BRAVE_MCP_AUDIT_SINK_PORT: 'oops' },
+      warn: () => {},
+    })).toThrow('BRAVE_MCP_AUDIT_SINK_PORT must be an integer between 1 and 65535');
+  });
+
   it('builds env-mode OAuth auth config without disturbing unrelated config', () => {
     const runtimeConfig = resolveRuntimeConfig({
       env: {

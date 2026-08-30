@@ -387,8 +387,8 @@ describe('server-utils', () => {
 
     await startStreamableHttpServer(createServer);
 
-    // Verify cors middleware was registered
-    expect(mockState.corsMock).toHaveBeenCalledTimes(1);
+    // CORS is disabled by default for the loopback-only deployment.
+    expect(mockState.corsMock).not.toHaveBeenCalled();
     expect(mockState.honoUseMock).toHaveBeenCalled();
 
     // Verify serve was called with correct port
@@ -433,6 +433,37 @@ describe('server-utils', () => {
     signalHandlers.get('SIGINT')?.();
     expect(mockState.mockHttpServer.close).toHaveBeenCalledTimes(1);
     expect(exitSpy).toHaveBeenCalledWith(0);
+  });
+
+  it('enables CORS only for configured exact origins', async () => {
+    const createServer = vi.fn(() => createServerLike() as never);
+    vi.spyOn(process, 'on').mockReturnValue(process);
+
+    await startStreamableHttpServer(createServer, { corsOrigins: ['https://client.example'] });
+
+    expect(mockState.corsMock).toHaveBeenCalledWith({ origin: ['https://client.example'] });
+  });
+
+  it('propagates client, cwd, and session headers into request context', async () => {
+    let seenRequestContext = getRequestContext();
+    const server = createServerLike();
+    server.connect.mockImplementation(async () => {
+      seenRequestContext = getRequestContext();
+    });
+    vi.spyOn(process, 'on').mockReturnValue(process);
+    await startStreamableHttpServer(() => server as never);
+
+    await runMcpRequest(createMockContext({
+      'X-Brave-Client': 'codex',
+      'X-Brave-Cwd': '/tmp/what',
+      'X-Brave-Session': 'session-123',
+    }));
+
+    expect(seenRequestContext?.metadata).toEqual({
+      client: 'codex',
+      cwd: '/tmp/what',
+      sessionId: 'session-123',
+    });
   });
 
   it('startStreamableHttpServer starts when Promise.withResolvers is unavailable', async () => {
@@ -504,9 +535,9 @@ describe('server-utils', () => {
     await startStreamableHttpServer(createServer, { allowedHosts: ['localhost'] });
 
     const middlewares = mockState.getMiddlewareHandlers();
-    expect(middlewares).toHaveLength(3);
+    expect(middlewares).toHaveLength(2);
 
-    const hostGuard = middlewares[1];
+    const hostGuard = middlewares[0];
     const next = vi.fn().mockResolvedValue(undefined);
     const allowedContext = {
       req: {

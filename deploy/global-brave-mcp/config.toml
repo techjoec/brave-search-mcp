@@ -1,0 +1,16 @@
+[audit]
+enabled = true
+logRaw = true
+sinkHost = "127.0.0.1"
+sinkPort = 1515
+
+[llmContext]
+count = 8
+maximumNumberOfUrls = 8
+maximumNumberOfTokens = 2048
+maximumNumberOfSnippets = 16
+maximumNumberOfTokensPerUrl = 512
+maximumNumberOfSnippetsPerUrl = 2
+responseMode = "compact"
+maxSnippetChars = 400
+maxOutputChars = 8000

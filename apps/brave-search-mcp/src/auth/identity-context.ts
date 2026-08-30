@@ -22,12 +22,23 @@ export interface CallerIdentity {
 export interface RequestContext {
   requestId: string;
   identity: CallerIdentity;
+  metadata?: RequestMetadata;
+}
+
+export interface RequestMetadata {
+  client?: string;
+  cwd?: string;
+  sessionId?: string;
 }
 
 const requestContextStorage = new AsyncLocalStorage<RequestContext>();
 
-export function createRequestContext(identity: CallerIdentity, requestId: string = randomUUID()): RequestContext {
-  return { requestId, identity };
+export function createRequestContext(
+  identity: CallerIdentity,
+  requestId: string = randomUUID(),
+  metadata?: RequestMetadata,
+): RequestContext {
+  return { requestId, identity, ...(metadata ? { metadata } : {}) };
 }
 
 export function runWithRequestContext<T>(context: RequestContext, fn: () => T): T {

@@ -3,7 +3,7 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CallerIdentity } from './auth/identity-context.js';
+import type { CallerIdentity, RequestMetadata } from './auth/identity-context.js';
 import type { AuthConfig } from './config-loader.js';
 import process from 'node:process';
 import { serve } from '@hono/node-server';
@@ -23,6 +23,7 @@ import {
 
 export interface StartServerOptions {
   allowedHosts?: string[];
+  corsOrigins?: string[];
   auth?: AuthConfig;
 }
 
@@ -110,8 +111,8 @@ export async function startStreamableHttpServer(
 
   const app = new Hono<HonoVariables>();
 
-  // Enable CORS for all origins
-  app.use('*', cors());
+  if (options?.corsOrigins?.length)
+    app.use('*', cors({ origin: options.corsOrigins }));
 
   // DNS rebinding protection via Host header validation
   const localhostHosts = ['127.0.0.1', 'localhost', '::1'];
@@ -194,8 +195,13 @@ export async function startStreamableHttpServer(
   // MCP endpoint - create a fresh transport and server per request (stateless)
   app.all('/mcp', async (c) => {
     const identity = (c.get(CALLER_IDENTITY_CONTEXT_KEY) as CallerIdentity | undefined) ?? HTTP_ANONYMOUS_IDENTITY;
+    const metadata: RequestMetadata = {
+      client: c.req.header('x-brave-client'),
+      cwd: c.req.header('x-brave-cwd'),
+      sessionId: c.req.header('x-brave-session'),
+    };
     return runWithRequestContext(
-      createRequestContext(identity),
+      createRequestContext(identity, undefined, metadata),
       async () => {
         const server = createServer();
         const transport = new WebStandardStreamableHTTPServerTransport({

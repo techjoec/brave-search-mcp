@@ -10,7 +10,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vites
 import packageJson from '../../package.json' with { type: 'json' };
 import { createRequestContext, runWithRequestContext } from '../../src/auth/identity-context.js';
 import { createDefaultFeatureConfig, resolveRuntimeConfig } from '../../src/config-loader.js';
-import { BraveMcpServer } from '../../src/server.js';
+import { BraveMcpServer, createBraveMcpRuntimeState } from '../../src/server.js';
 import { TOOL_NAMES } from '../../src/tool-catalog.js';
 import { createMockBraveSearch } from '../mocks/index.js';
 
@@ -473,6 +473,32 @@ describe('braveMcpServer', () => {
       }
       finally {
         await close();
+      }
+    });
+
+    it('shares guardrail counters across stateless HTTP server instances', async () => {
+      vi.stubEnv('BRAVE_MCP_REQUEST_LIMIT', '1');
+      const featureConfig = resolveFeatureConfigFromCurrentEnv();
+      const runtimeState = createBraveMcpRuntimeState();
+      const firstServer = new BraveMcpServer('fake-api-key', false, mockBraveSearch as unknown as BraveSearch, featureConfig, runtimeState);
+      const firstConnection = await createConnectedClient(firstServer);
+      try {
+        const first = await firstConnection.client.callTool({ name: TOOL_NAMES.web, arguments: { query: 'first' } });
+        expect(first.isError).toBeFalsy();
+      }
+      finally {
+        await firstConnection.close();
+      }
+
+      const secondServer = new BraveMcpServer('fake-api-key', false, mockBraveSearch as unknown as BraveSearch, featureConfig, runtimeState);
+      const secondConnection = await createConnectedClient(secondServer);
+      try {
+        const second = await secondConnection.client.callTool({ name: TOOL_NAMES.web, arguments: { query: 'second' } });
+        expect(second.isError).toBe(true);
+        expect(((second.content as unknown[])[0] as { text: string }).text).toContain('Request limit of 1 exceeded');
+      }
+      finally {
+        await secondConnection.close();
       }
     });
 
