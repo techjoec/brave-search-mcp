@@ -1,4 +1,5 @@
 # Dependencies
+node_modules
 .pnpm-store
 
 # Build outputs
@@ -7,6 +8,7 @@ build
 .turbo
 
 # Environment variables
+.env
 .env.local
 .env.*.local
 
